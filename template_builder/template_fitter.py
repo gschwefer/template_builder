@@ -139,6 +139,16 @@ class TemplateFitter(Tool):
         default_value=False,
     ).tag(config=True)
 
+    save_intermediate_times = Bool(
+        help="Save results at steps before final templates",
+        default_value=False,
+    ).tag(config=True)
+
+    save_intermediate_images = Bool(
+        help="Save results at steps before final templates",
+        default_value=False,
+    ).tag(config=True)
+
     classes = (
         [
             CameraCalibrator,
@@ -235,6 +245,8 @@ class TemplateFitter(Tool):
             and not self.compute_image
             and not self.compute_time
             and not self.compute_fraction
+            and not self.save_intermediate_images
+            and not self.save_intermediate_times
         ):
             self.fraction_computation = True
             self.time_computation = True
@@ -244,10 +256,20 @@ class TemplateFitter(Tool):
         self.dummy_time = Time("2010-01-01T00:00:00", format="isot", scale="utc")
         # self.point, self.xmax_scale, self.tilt_tel = None, None, None
 
-        if self.time_computation:
+        if self.time_computation or self.save_intermediate_times:
             self.time_slope = {}  # Image time gradients
-        if self.image_computation:
-            self.templates, self.templates_xb, self.templates_yb = (
+        if self.image_computation or self.save_intermediate_images:
+            (
+                self.templates,
+                self.templates_xb,
+                self.templates_yb,
+                self.templates_peak_time,
+                self.templates_xb_peak_time,
+                self.templates_yb_peak_time,
+            ) = (
+                {},
+                {},
+                {},
                 {},
                 {},
                 {},
@@ -299,6 +321,47 @@ class TemplateFitter(Tool):
         """
         Last steps after processing events.
         """
+
+        if self.save_intermediate_images:
+            file_handler_intermediate_x = gzip.open(
+                self.output_file + "_template_x.intermediate.gz", "wb"
+            )
+            pickle.dump(self.templates_xb, file_handler_intermediate_x)
+            file_handler_intermediate_x.close()
+
+            file_handler_intermediate_y = gzip.open(
+                self.output_file + "_template_y.intermediate.gz", "wb"
+            )
+            pickle.dump(self.templates_yb, file_handler_intermediate_y)
+            file_handler_intermediate_y.close()
+
+            file_handler_intermediate_charge = gzip.open(
+                self.output_file + "_template_charge.intermediate.gz", "wb"
+            )
+            pickle.dump(self.templates, file_handler_intermediate_charge)
+
+            file_handler_intermediate_peak_time = gzip.open(
+                self.output_file + "_template_peak_times.intermediate.gz", "wb"
+            )
+            pickle.dump(self.templates_peak_time, file_handler_intermediate_peak_time)
+            file_handler_intermediate_peak_time.close()
+
+            file_handler_intermediate_x_peak_time = gzip.open(
+                self.output_file + "_template_x_peak_times.intermediate.gz", "wb"
+            )
+            pickle.dump(
+                self.templates_xb_peak_time, file_handler_intermediate_x_peak_time
+            )
+            file_handler_intermediate_x_peak_time.close()
+
+            file_handler_intermediate_y_peak_time = gzip.open(
+                self.output_file + "_template_y_peak_times.intermediate.gz", "wb"
+            )
+            pickle.dump(
+                self.templates_yb_peak_time, file_handler_intermediate_y_peak_time
+            )
+            file_handler_intermediate_y_peak_time.close()
+
         if self.image_computation:
             self.fitter.generate_image_templates(
                 self.templates_xb,
@@ -306,8 +369,11 @@ class TemplateFitter(Tool):
                 self.templates,
                 output_file=self.output_file,
             )
-        if self.time_computation:
-            self.generate_time_templates()
+
+        if self.time_computation or self.save_intermediate_times:
+            self.generate_time_templates(
+                save_intermediate_results=self.save_intermediate_times
+            )
         if self.fraction_computation:
             self.generate_fraction_templates()
 
@@ -411,7 +477,12 @@ class TemplateFitter(Tool):
                 .value
             )
 
-            if self.image_computation or self.time_computation:
+            if (
+                self.image_computation
+                or self.time_computation
+                or self.save_intermediate_times
+                or self.save_intermediate_images
+            ):
                 x, y = self.get_rotated_translated_pixel_positions(tel_id)
 
                 geom = self.event_source.subarray.tel[tel_id].camera.geometry
@@ -428,11 +499,12 @@ class TemplateFitter(Tool):
                 pmt_signal = dl1.image
                 image = pmt_signal[mask].astype(np.float32)
 
-            if self.time_computation:
                 peak_times = dl1.peak_time[mask]
 
-                time_mask = np.logical_and(peak_times > 0, np.isfinite(peak_times))
-                time_mask = np.logical_and(time_mask, image > 5)
+                time_mask_1 = np.logical_and(peak_times > 0, np.isfinite(peak_times))
+
+            if self.time_computation or self.save_intermediate_times:
+                time_mask = np.logical_and(time_mask_1, image > 5)
 
                 if np.sum(time_mask) > 3:
                     time_slope = lts_linear_regression(
@@ -448,25 +520,38 @@ class TemplateFitter(Tool):
 
             if (key) in self.key_list:
                 # Extend the list if an entry already exists
-                if self.image_computation:
+                if self.image_computation or self.save_intermediate_images:
                     self.templates[key].extend(image)
                     self.templates_xb[key].extend(x.value.tolist())
                     self.templates_yb[key].extend(y.value.tolist())
+
+                    self.templates_peak_time[key].extend(peak_times[time_mask_1])
+                    self.templates_xb_peak_time[key].extend(
+                        x[time_mask_1].value.tolist()
+                    )
+                    self.templates_yb_peak_time[key].extend(
+                        y[time_mask_1].value.tolist()
+                    )
+
                 if self.fraction_computation:
                     self.count[key] = self.count[key] + (
                         1 * self.xmax_scale[(x_diff_bin, offset_bin)]
                     )
-                if self.time_computation and time_slope is not None:
-                    self.time_slope[key].append(time_slope)
+                if self.time_computation or self.save_intermediate_times:
+                    if time_slope is not None:
+                        self.time_slope[key].append(time_slope)
             else:
                 self.key_list.append((key))
-                if self.image_computation:
+                if self.image_computation or self.save_intermediate_images:
                     self.templates[key] = image.tolist()
                     self.templates_xb[key] = x.value.tolist()  # .value#.tolist()
                     self.templates_yb[key] = y.value.tolist()  # .value#.tolist()
+                    self.templates_peak_time[key] = peak_times[time_mask_1].tolist()
+                    self.templates_xb_peak_time[key] = x[time_mask_1].value.tolist()
+                    self.templates_yb_peak_time[key] = y[time_mask_1].value.tolist()
                 if self.fraction_computation:
                     self.count[key] = 1 * self.xmax_scale[(x_diff_bin, offset_bin)]
-                if self.time_computation:
+                if self.time_computation or self.save_intermediate_times:
                     if time_slope is not None:
                         self.time_slope[key] = [time_slope]
                     else:
@@ -507,11 +592,15 @@ class TemplateFitter(Tool):
 
         return x, y
 
-    def generate_time_templates(self):
+    def generate_time_templates(self, save_intermediate_results):
         time_slope_template = {}
+        if save_intermediate_results:
+            time_slope_intermediate_map = {}
         for key in tqdm(list(self.time_slope.keys())):
             time_slope_list = np.asarray(self.time_slope[key])
             time_slope_list = time_slope_list[~np.isnan(time_slope_list)]
+            if save_intermediate_results:
+                time_slope_intermediate_map[key] = time_slope_list
             if len(time_slope_list) > 5:
                 time_slope_template[key] = np.array(
                     (
@@ -523,6 +612,12 @@ class TemplateFitter(Tool):
         file_handler = gzip.open(self.output_file + "_time.template.gz", "wb")
         pickle.dump(time_slope_template, file_handler)
         file_handler.close()
+        if save_intermediate_results:
+            file_handler_intermediate = gzip.open(
+                self.output_file + "_time.intermediate.gz", "wb"
+            )
+            pickle.dump(time_slope_intermediate_map, file_handler_intermediate)
+            file_handler_intermediate.close()
 
     def generate_fraction_templates(self):
         fraction = {}

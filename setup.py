@@ -24,6 +24,8 @@ setup(
         "console_scripts": [
             "template-fitter = template_builder.template_fitter:main",
             "template-merger = template_builder.merge_templates:main",
+            "training-data-generator = template_builder.ml_likelihood_learning.classifier_training_data_generator:main",
+            "training-table-merger = template_builder.ml_likelihood_learning.merge_training_tables:main",
         ]
     },
 )
