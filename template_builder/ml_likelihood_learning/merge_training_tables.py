@@ -88,7 +88,7 @@ class TrainingDataMerger(Tool):
         if self.shuffle:
             if "charge" in self.full_training_table.keys():
                 shuffled_training_table = shuffle_table(
-                    self.full_training_table, "charge"
+                    self.full_training_table, ["charge","peak_time","peak_time_rel_to_array"]
                 )
                 outfile_handler = open(
                     self.output_file + ".shuffle.pixel_charge.pkl", "wb"
@@ -97,7 +97,7 @@ class TrainingDataMerger(Tool):
                 outfile_handler.close()
             elif "time_slope" in self.full_training_table.keys():
                 shuffled_training_table = shuffle_table(
-                    self.full_training_table, "time_slope"
+                    self.full_training_table, ["time_slope"]
                 )
                 outfile_handler = open(
                     self.output_file + ".shuffle.time_gradient.pkl", "wb"
