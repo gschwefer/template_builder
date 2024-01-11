@@ -110,6 +110,11 @@ class TrainingDataGenerator(Tool):
         default_value=2,
     ).tag(config=True)
 
+    max_events = Int(
+        help="Number of events to process in the file",
+        default_value=1000,
+    ).tag(config=True)
+
     parser = ArgumentParser()
     parser.add_argument("input_files", nargs="*", type=Path)
 
@@ -121,7 +126,7 @@ class TrainingDataGenerator(Tool):
         ("i", "input"): "TrainingDataGenerator.input_files",
         ("o", "output"): "TrainingDataGenerator.output_file",
         ("t", "allowed-tels"): "EventSource.allowed_tels",
-        ("m", "max-events"): "EventSource.max_events",
+        ("m", "max-events"): "TrainingDataGenerator.max_events",
         "image-cleaner-type": "ImageProcessor.image_cleaner_type",
     }
 
@@ -174,6 +179,7 @@ class TrainingDataGenerator(Tool):
                 input_url=self.input_files[0],
                 parent=self,
                 focal_length_choice=self.focal_length_choice,
+                max_events=self.max_events,
             )
         except RuntimeError:
             print("Effective Focal length not availible, defaulting to equivelent")
@@ -182,6 +188,7 @@ class TrainingDataGenerator(Tool):
                 input_url=self.input_files[0],
                 parent=self,
                 focal_length_choice=self.focal_length_choice,
+                max_events=self.max_events,
             )
 
         if not self.event_source.has_any_datalevel(COMPATIBLE_DATALEVELS):
@@ -251,6 +258,8 @@ class TrainingDataGenerator(Tool):
                     "pointing_az",
                     "charge",
                     "neighbor_charge",
+                    "peak_time",
+                    "peak_time_rel_to_array"
                 ]
             )
 
@@ -266,6 +275,7 @@ class TrainingDataGenerator(Tool):
                 input_url=input_file,
                 parent=self,
                 focal_length_choice=self.focal_length_choice,
+                max_events=self.max_events,
             )
             self.point, self.tilt_tel = None, None
 
@@ -342,6 +352,8 @@ class TrainingDataGenerator(Tool):
                 self.source_direction = src.transform_to(
                     NominalFrame(origin=self.point)
                 )
+
+                trigger_time=event.trigger.time
 
                 for tel_id, dl1 in event.dl1.tel.items():
                     # First set the the last dict key missing, the impact distance
@@ -421,9 +433,11 @@ class TrainingDataGenerator(Tool):
                         tel_id
                     ].camera.geometry.neighbor_matrix_sparse.indptr
 
-                    if self.time_computation:
-                        peak_times = dl1.peak_time[mask]
+                    peak_times = dl1.peak_time[mask]
 
+                    tel_trigger_offset=event.trigger.tel[tel_id].time-trigger_time
+
+                    if self.time_computation:
                         time_mask = np.logical_and(
                             peak_times > 0, np.isfinite(peak_times)
                         )
@@ -460,7 +474,7 @@ class TrainingDataGenerator(Tool):
                             self.timing_table.add_row(new_time_row)
 
                     if self.image_computation:
-                        for j, charge in enumerate(image):
+                        for j, (charge, time) in enumerate(zip(image, peak_times)):
                             neighbor_charge = np.mean(
                                 pmt_signal[
                                     nbor_indices[
@@ -493,13 +507,15 @@ class TrainingDataGenerator(Tool):
                                 pt_az,
                                 charge,
                                 neighbor_charge,
+                                time,
+                                time+tel_trigger_offset.to_value("sec")*1e9
                             ]
                             self.pixel_table.add_row(new_charge_row)
 
     def finish(self):
         if self.time_computation:
             if self.shuffle:
-                shuffled_timing_table = shuffle_table(self.timing_table, "time_slope")
+                shuffled_timing_table = shuffle_table(self.timing_table, ["time_slope"])
                 with open(
                     self.output_file
                     + "_dilate_{}.shuffle.time_gradient.pkl".format(self.n_dilate),
@@ -515,7 +531,9 @@ class TrainingDataGenerator(Tool):
                     pickle.dump(self.timing_table, of)
         if self.image_computation:
             if self.shuffle:
-                final_pixel_table = shuffle_table(self.pixel_table, "charge")
+                final_pixel_table = shuffle_table(
+                    self.pixel_table, ["charge", "peak_time", "peak_time_rel_to_array"]
+                )
                 with open(
                     self.output_file
                     + "_dilate_{}.shuffle.pixel_charge.pkl".format(self.n_dilate),
